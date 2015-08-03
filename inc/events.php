@@ -69,8 +69,32 @@ class BE_Events_Calendar {
 			add_action( 'save_post', array( $this, 'metabox_save' ),  1, 2  );
 		}
 		
+		// Add Hooks to Generate Recurring Events
+		$this->add_insert_post_hooks();
+		
+		// Avoid generating events on trash/untrash post, which can cause all sorts of issues
+		add_action( 'wp_trash_post', array( $this, 'remove_insert_post_hooks' ) );
+		add_action( 'untrash_post', array( $this, 'remove_insert_post_hooks' ) );
+		add_action( 'trashed_post', array( $this, 'add_insert_post_hooks' ) );
+		add_action( 'untrashed_post', array( $this, 'add_insert_post_hooks' ) );
+		
 		// Modify Event Listings query
 		add_action( 'pre_get_posts', array( $this, 'event_query' ) );
+	}
+	
+	/**
+	 * Check if recurring events are supported.
+	 *
+	 * @since 1.2.0
+	 *
+	 * @return boolean
+	 */
+	function recurring_supported() {
+		$supports = get_theme_support( 'be-events-calendar' );
+		if( isset( $supports[0] ) && is_array( $supports[0] ) && in_array( 'recurring-events', $supports[0] ) )
+			return true;
+		
+		return false;
 	}
 	
 	/** 
@@ -131,6 +155,9 @@ class BE_Events_Calendar {
 			'event_end'   => 'Ends',
 			'date'        => 'Published Date',
 		);
+		
+		if( $this->recurring_supported() )
+			$columns['recurring'] = 'Recurring Options';
 	
 		return $columns;
 	}
@@ -145,15 +172,15 @@ class BE_Events_Calendar {
 	 */
 	function manage_event_columns( $column, $post_id ) {
 
-		global $post;
+		$date_format = 'M j, Y g:i A';
 	
 		switch( $column ) {
 	
-			/* If displaying the 'duration' column. */
+			/* If displaying the 'event_start' column. */
 			case 'event_start' :
 	
 				/* Get the post meta. */
-				$start = esc_attr( date( 'M j, Y g:i A', get_post_meta( $post_id, 'be_event_start', true ) ) );
+				$start = esc_attr( date( $date_format, get_post_meta( $post_id, 'be_event_start', true ) ) );
 	
 				/* If no duration is found, output a default message. */
 				if ( empty( $start ) )
@@ -165,11 +192,11 @@ class BE_Events_Calendar {
 	
 				break;
 	
-			/* If displaying the 'genre' column. */
+			/* If displaying the 'event_end' column. */
 			case 'event_end' :
 	
 				/* Get the post meta. */
-				$end = esc_attr( date( 'M j, Y g:i A', get_post_meta( $post_id, 'be_event_end', true ) ) );
+				$end = esc_attr( date( $date_format, get_post_meta( $post_id, 'be_event_end', true ) ) );
 	
 				/* If no duration is found, output a default message. */
 				if ( empty( $end ) )
@@ -179,6 +206,29 @@ class BE_Events_Calendar {
 				else
 					echo $end;
 	
+				break;
+			
+			/* If displaying the 'recurring' column. */
+			case 'recurring' :
+
+				// Recurring options
+				$start = absint( get_post_meta( $post_id , 'be_event_start', true ) );
+				$end   = absint( get_post_meta( $post_id , 'be_event_end',   true ) );
+				$recurring_period = get_post_meta( $post_id , 'be_recurring_period',  true );
+				$recurring_end    = absint( get_post_meta( $post_id , 'be_recurring_end',     true ) );
+				$recurring = get_post_meta( $post_id, 'be_recurring', true );
+				$parent = wp_get_post_parent_id( $post_id );
+				$output = '';
+				if ( !empty( $parent ) ) {
+					$output = 'Part of series: <a href="' . get_edit_post_link( $parent ) . '">' . get_the_title( $parent ) . '</a><br/>';
+				} elseif( empty( $parent ) && $recurring ) {
+					$output = '<strong>Series Master</strong><br/>';
+				}
+				if( !empty( $output ) ) {
+					$output .= 'Starting ' . date( $date_format, $start ) . ', recurring ' . ucfirst( $recurring_period ) . ' until ' .  date( 'M j, Y', $recurring_end ) . ' ' .  date( 'g:i A', $end );
+					echo $output;
+				}
+				
 				break;
 	
 			/* Just break out of the switch statement for everything else. */
@@ -199,7 +249,10 @@ class BE_Events_Calendar {
 	
 		$columns['event_start'] = 'event_start';
 		$columns['event_end']   = 'event_end';
-	
+		
+		if( $this->recurring_supported() )
+			$columns['recurring'] = 'recurring';
+		
 		return $columns;
 	}	 
 	
@@ -251,6 +304,19 @@ class BE_Events_Calendar {
 				);
 			}
 			
+			/* Check if 'orderby' is set to 'recurring'. */
+			if ( $this->recurring_supported() && isset( $vars['orderby'] ) && 'recurring' == $vars['orderby'] ) {
+	
+				/* Merge the query vars with our custom variables. */
+				$vars = array_merge(
+					$vars,
+					array(
+						'meta_key' => 'be_recurring_event',
+						'orderby' => 'meta_value_num'
+					)
+				);
+			}
+			
 		}
 	
 		return $vars;
@@ -284,8 +350,6 @@ class BE_Events_Calendar {
 		if ( !is_array( $supports ) || !in_array( 'event-category', $supports[0] ) )
 			return;
 			
-		$post_types = in_array( 'recurring-events', $supports[0] ) ? array( 'events', 'recurring-events' ) : array( 'events' );
-			
 		$labels = array(
 			'name'              => 'Categories',
 			'singular_name'     => 'Category',
@@ -300,7 +364,7 @@ class BE_Events_Calendar {
 			'menu_name'         => 'Category'
 		); 	
 	
-		register_taxonomy( 'event-category', $post_types, array(
+		register_taxonomy( 'event-category', array( 'events' ), array(
 			'hierarchical' => true,
 			'labels'       => $labels,
 			'show_ui'      => true,
@@ -391,6 +455,44 @@ class BE_Events_Calendar {
 		</div>
 		<p class="desc">Date format should be <strong>MM/DD/YYYY</strong>. Time format should be <strong>H:MM am/pm</strong>.<br>Example: 05/12/2015 6:00pm</p>
 		<?php
+		
+		// Recurring Options
+		if( $this->recurring_supported() ) {
+			
+			$recurring        = get_post_meta( get_the_ID() , 'be_recurring',  true );
+			$recurring_period = get_post_meta( get_the_ID() , 'be_recurring_period',  true );
+			$recurring_end    = get_post_meta( get_the_ID() , 'be_recurring_end',     true );
+			$regenerate       = get_post_meta( get_the_ID() , 'be_regenerate_events', true );
+
+			if ( !empty( $recurring_end ) ) {
+				$recurring_end = date( 'm/d/Y', $recurring_end );
+			}
+			
+			?>
+			<hr>
+			<div class="section">
+				<p class="title">Recurring Options</p>
+			</div>
+			<div class="section">
+				<label for="be-events-calendar-recurring">Recurring Event:</label> 				<input type="checkbox" name="be-events-calendar-recurring" id="be-events-calendar-recurring" value="1" <?php checked( '1', $recurring ); ?>>
+			</div>
+			<div class="section">
+				<label for="be-events-calendar-repeat">Repeat period:</label> 				<select name="be-events-calendar-repeat" id="be-events-calendar-repeat">
+					<option value="daily" <?php selected( 'daily', $recurring_period ); ?>>Daily</option>
+					<option value="weekly" <?php selected( 'weekly', $recurring_period ); ?>>Weekly</option>
+					<option value="monthly" <?php selected( 'montly', $recurring_period ); ?>>Monthly</option>
+				</select>
+			</div>
+			<div class="section">
+				<label for="be-events-calendar-repeat-end">Repeat ends:</label> 			<input name="be-events-calendar-repeat-end" type="text"  id="be-events-calendar-repeat-end" class="be-events-calendar-date" value="<?php echo !empty( $recurring_end ) ? $recurring_end : ''; ?>" placeholder="Date">
+			</div>
+			<div class="section">
+				<label for="be-events-calendar-regenerate">Repeat events:</label>
+				<input type="checkbox" name="be-events-calendar-regenerate" id="be-events-calendar-regenerate" value="1" <?php checked( '1', $regenerate ); ?>>
+				<span class="check-desc"><strong>This will delete all scheduled events!</strong> Past events will be unchanged.</span>
+			</div>
+			<?php
+		}	
 	}
 	
 	/**
@@ -439,6 +541,252 @@ class BE_Events_Calendar {
 			update_post_meta( $post_id, 'be_event_start', $start_unix );
 			update_post_meta( $post_id, 'be_event_end',   $end_unix   );
 		}
+		
+		// Recurring Options
+		if( $this->recurring_supported() ) {
+			
+			// This will loop forever unless the parent id is set to the original post
+			// use parent/child relationship for recurring events in series
+			// the parent is the "series master event"
+			
+			// Make sure the event start/end dates were not left blank before we run the save
+			if ( isset( $_POST['be-events-calendar-start'] )
+				&& isset( $_POST['be-events-calendar-recurring'] )
+				&& isset( $_POST['be-events-calendar-end'] ) 
+				&& isset( $_POST['be-events-calendar-repeat-end'] ) 
+				&& !empty( $_POST['be-events-calendar-start'] ) 
+				&& !empty( $_POST['be-events-calendar-end'] ) 
+				&& !empty( $_POST['be-events-calendar-repeat-end'] )
+				&& !empty( $_POST['be-events-calendar-recurring'] ) )
+			{
+				
+				$start      = $_POST['be-events-calendar-start'] . ' ' . $_POST['be-events-calendar-start-time'];
+				$start_unix = strtotime( $start );
+				$end        = $_POST['be-events-calendar-end'] . ' ' . $_POST['be-events-calendar-end-time'];
+				$end_unix   = strtotime( $end );
+				
+				update_post_meta( $post_id, 'be_event_start', $start_unix );
+				update_post_meta( $post_id, 'be_event_end',   $end_unix   );
+				update_post_meta( $post_id, 'be_recurring_period', $_POST['be-events-calendar-repeat'] );
+				update_post_meta( $post_id, 'be_recurring_end',  strtotime( $_POST['be-events-calendar-repeat-end'] )  );
+
+				if ( isset( $_POST['be-events-calendar-regenerate'] ) ) {
+					update_post_meta( $post_id, 'be_regenerate_events', '1' );
+				}
+				if ( isset( $_POST['be-events-calendar-recurring'] ) ) {
+					update_post_meta( $post_id, 'be_recurring', '1' );
+				}
+			}
+		}
+	}
+	
+	/**
+	 * Removes the generate functions for recurring events from the wp_insert_post action.
+	 *
+	 * @since 1.2.0
+	 */
+	function remove_insert_post_hooks() {
+		remove_action( 'wp_insert_post', array( $this, 'generate_events' ) );
+		remove_action( 'wp_insert_post', array( $this, 'regenerate_events' ) );
+	}
+	
+	/**
+	 * Adds the generate functions for recurring events to the wp_insert_post action.
+	 *
+	 * @since 1.2.0
+	 */
+	function add_insert_post_hooks() {
+		add_action( 'wp_insert_post', array( $this, 'generate_events' ) );
+		add_action( 'wp_insert_post', array( $this, 'regenerate_events' ) );
+	}
+	
+	/**
+	 * Generate Events
+	 *
+	 * @since 1.2.0
+	 *
+	 * @param int $post_id
+	 * @param boolean $regenerating
+	 */
+	function generate_events( $post_id, $regenerating = false ) {
+		
+		if( !$this->recurring_supported() )
+			return;
+
+		if( 'events' !== get_post_type( $post_id ) )
+			return;
+			
+		if( 'publish' !== get_post_status( $post_id ) )
+			return;
+			
+		// Only generate once
+		$generated = get_post_meta( $post_id, 'be_generated_events', true );
+		if( $generated )
+			return;
+		
+		// Make sure this is a master event, and not a repeated child
+		$parent_event = wp_get_post_parent_id( $post_id );
+		if( $parent_event )
+			return;
+		
+		// Make sure this is a recurring event
+		$recurring = get_post_meta( $post_id, 'be_recurring', true );
+		if( !$recurring )
+			return;
+		
+		// Event data
+		$event_title = get_post( $post_id )->post_title;
+		$event_content = get_post( $post_id )->post_content;
+		$event_start = get_post_meta( $post_id, 'be_event_start', true );
+		$event_end = get_post_meta( $post_id, 'be_event_end', true );
+		
+		// Save parent start date to skip the first recurring event
+		$parent_start = $event_start;
+		
+		$stop = get_post_meta( $post_id, 'be_recurring_end', true );
+		if( empty( $stop ) && !empty( $event_start ) )
+			$stop = strtotime( '+1 Years', $event_start );
+		$period = get_post_meta( $post_id, 'be_recurring_period', true );
+		
+		// Validate the stop timestamp, if it's not valid bail
+		if( !$this->is_timestamp( $stop ) )
+			return;
+		
+		// Remove Generate Recurring Events, this prevents an infinite loop
+		$this->remove_insert_post_hooks();
+		
+		// Build the posts!
+		while( $event_start < $stop ) {
+			
+			// For regenerating, only create future events
+			// And don't recreate the series master
+			if( $event_start != $parent_start && ( !$regenerating || ( $regenerating && $event_start > time() ) ) ):
+
+				// Create the Event
+				$args = array(
+					'post_title' => $event_title,
+					'post_content' => $event_content,
+					'post_status' => 'publish',
+					'post_type' => 'events',
+					'post_parent' => $post_id,
+				);
+				$event_id = wp_insert_post( $args );
+				if( $event_id ) {
+					update_post_meta( $event_id, 'be_recurring', '0' );
+					update_post_meta( $event_id, 'be_event_start', $event_start );
+					update_post_meta( $event_id, 'be_event_end', $event_end );
+					
+					// Add any additional metadata
+					$metas = apply_filters( 'be_events_manager_recurring_meta', array() );
+					if( !empty( $metas ) ) {
+						foreach( $metas as $meta ) {
+							
+							update_post_meta( $event_id, $meta, get_post_meta( $post_id, $meta, true ) );
+						}
+					}
+					
+					// Event Category
+					$supports = get_theme_support( 'be-events-calendar' );
+					if( is_array( $supports ) && in_array( 'event-category', $supports[0] ) ) {
+						$terms = get_the_terms( $post_id, 'event-category' );
+						if( !empty( $terms ) && !is_wp_error( $terms ) ) {
+							$terms = wp_list_pluck( $terms, 'slug' );
+							wp_set_object_terms( $event_id, $terms, 'event-category' );
+						}
+					}
+
+				}
+			endif;
+			
+			// Increment the date
+			switch( $period ) {
+		
+				case 'daily':
+					$event_start = strtotime( '+1 Days', $event_start );
+					$event_end = strtotime( '+1 Days', $event_end );
+					break;
+			
+				case 'weekly':
+					$event_start = strtotime( '+1 Weeks', $event_start );
+					$event_end = strtotime( '+1 Weeks', $event_end );
+					break;
+			
+				case 'monthly':
+					$event_start = strtotime( '+1 Months', $event_start );
+					$event_end = strtotime( '+1 Months', $event_end );
+					break;
+			}
+		}
+		
+		// Replace Generate Recurring Events, we need these normally, see above
+		$this->add_insert_post_hooks();
+		
+		// Dont generate again
+		update_post_meta( $post_id, 'be_generated_events', true );
+	}
+	
+	/**
+	 * Validate the timestamp.
+	 *
+	 * @since 1.2.0
+	 *
+	 * @link https://gist.github.com/sepehr/6351385
+	 *
+	 * @param string $timestamp 
+	 * @return boolean
+	 */
+	function is_timestamp( $timestamp ) {
+		$check = (is_int($timestamp) OR is_float($timestamp))
+			? $timestamp
+			: (string) (int) $timestamp;
+		return  ($check === $timestamp)
+	        	AND ( (int) $timestamp <=  PHP_INT_MAX)
+	        	AND ( (int) $timestamp >= ~PHP_INT_MAX);
+	}
+	
+	/**
+	 * Regenerate Events
+	 * 
+	 * @since 1.0.0
+	 * @param int $post_id
+	 */
+	function regenerate_events( $post_id ) {
+		if( 'events' !== get_post_type( $post_id ) )
+			return;
+		
+		if( !$this->recurring_supported() )
+			return;
+			
+		// Make sure they want to regenerate them
+		$regenerate = get_post_meta( $post_id, 'be_regenerate_events', true );
+		if( ! $regenerate )	
+			return;
+			
+		// Delete all future events
+		$args = array(
+			'post_type' => 'events',
+			'posts_per_page' => -1,
+			'post_parent' => $post_id,
+			'meta_query' => array(
+				array(
+					'key' => 'be_event_start',
+					'value' => time(),
+					'compare' => '>'
+				),
+			)
+		);
+		$loop = new WP_Query( $args );
+		if( $loop->have_posts() ): while( $loop->have_posts() ): $loop->the_post();
+			if( $post_id !== get_the_ID() )
+				wp_delete_post( get_the_ID(), false );
+		endwhile; endif; wp_reset_postdata();
+		
+		// Turn off regenerate and on generate
+		delete_post_meta( $post_id, 'be_regenerate_events' );
+		delete_post_meta( $post_id, 'be_generated_events' );
+		
+		// Generate new events
+		$this->generate_events( $post_id, true );
 	}
 	
 	/**
