@@ -656,7 +656,9 @@ class BE_Events_Calendar {
 		$this->remove_insert_post_hooks();
 		
 		// Build the posts!
-		while( $event_start < $stop ) {
+		$limit = apply_filters( 'be_calendar_recurring_limit', 100 );
+		$i = 1;
+		while( ( $event_start < $stop ) && ( $i < $limit ) ) {
 			
 			// For regenerating, only create future events
 			// And don't recreate the series master
@@ -698,6 +700,10 @@ class BE_Events_Calendar {
 				}
 			endif;
 			
+			// Set current start/end as past, prior to the incrementing
+			$previous_start = $event_start;
+			$previous_end = $event_end;
+			
 			// Increment the date
 			switch( $period ) {
 		
@@ -716,6 +722,13 @@ class BE_Events_Calendar {
 					$event_end = strtotime( '+1 Months', $event_end );
 					break;
 			}
+			
+			// Allow for custom recurring options
+			$event_start = apply_filters( 'be_calendar_recurrance_start', $event_start, $previous_start, $period, $post_id, $event_id );
+			$event_end = apply_filters( 'be_calendar_recurrance_end', $event_end, $previous_start, $period, $post_id, $event_id );
+			
+			// Limit the recurrances
+			$i++;
 		}
 		
 		// Replace Generate Recurring Events, we need these normally, see above
