@@ -20,7 +20,7 @@ class BE_Events_Calendar {
 	function __construct() {
 
 		// Fire on activation
-		register_activation_hook( __FILE__, array( $this, 'activation' ) );
+		register_activation_hook( BE_EVENTS_CALENDAR_FILE, array( $this, 'activation' ) );
 
 		// Load the plugin base
 		add_action( 'plugins_loaded', array( $this, 'init' ) );	
@@ -33,6 +33,7 @@ class BE_Events_Calendar {
 	 */
 	function activation() {
 
+		$this->post_type();
 		flush_rewrite_rules();
 	}
 
@@ -45,7 +46,7 @@ class BE_Events_Calendar {
 	
 		// Create Post Type
 		add_action( 'init', array( $this, 'post_type' ) );
-
+		
 		// Post Type columns
 		add_filter( 'manage_edit-events_columns', array( $this, 'edit_event_columns' ) ) ;
 		add_action( 'manage_events_posts_custom_column', array( $this, 'manage_event_columns' ), 10, 2 );
@@ -135,6 +136,7 @@ class BE_Events_Calendar {
 			'menu_icon'          => 'dashicons-calendar',
 		); 
 	
+		$args = apply_filters( 'be_events_manager_post_type_args', $args );
 		register_post_type( 'events', $args );	
 	}
 	
@@ -142,23 +144,27 @@ class BE_Events_Calendar {
 	 * Edit Column Titles
 	 *
 	 * @since 1.0.0
-	 * @link http://devpress.com/blog/custom-columns-for-custom-post-types/
+	 * @link http://justintadlock.com/archives/2011/06/27/custom-columns-for-custom-post-types
 	 * @param array $columns
 	 * @return array
 	 */
 	function edit_event_columns( $columns ) {
-	
-		$columns = array(
-			'cb'          => '<input type="checkbox" />',
-			'title'       => 'Event',
+
+		// Change Titles
+		$columns['title'] = 'Event';
+		$columns['date'] = 'Published Date';
+		
+		// New Columns
+		$new_columns = array(
 			'event_start' => 'Starts',
 			'event_end'   => 'Ends',
-			'date'        => 'Published Date',
 		);
 		
-		if( $this->recurring_supported() )
-			$columns['recurring'] = 'Recurring Options';
-	
+		// Add new columns after title column
+		$column_end = array_splice( $columns, 2 );
+		$column_start = array_splice( $columns, 0, 2);
+		$columns = array_merge( $column_start, $new_columns, $column_end );
+		
 		return $columns;
 	}
 	
@@ -166,7 +172,7 @@ class BE_Events_Calendar {
 	 * Edit Column Content
 	 *
 	 * @since 1.0.0
-	 * @link http://devpress.com/blog/custom-columns-for-custom-post-types/
+	 * @link http://justintadlock.com/archives/2011/06/27/custom-columns-for-custom-post-types
 	 * @param string $column
 	 * @param int $post_id
 	 */
@@ -180,6 +186,8 @@ class BE_Events_Calendar {
 			case 'event_start' :
 	
 				/* Get the post meta. */
+				$allday = get_post_meta( $post_id, 'be_event_allday', true );
+				$date_format = $allday ? 'M j, Y' : 'M j, Y g:i A';
 				$start = esc_attr( date( $date_format, get_post_meta( $post_id, 'be_event_start', true ) ) );
 	
 				/* If no duration is found, output a default message. */
@@ -196,6 +204,8 @@ class BE_Events_Calendar {
 			case 'event_end' :
 	
 				/* Get the post meta. */
+				$allday = get_post_meta( $post_id, 'be_event_allday', true );
+				$date_format = $allday ? 'M j, Y' : 'M j, Y g:i A';
 				$end = esc_attr( date( $date_format, get_post_meta( $post_id, 'be_event_end', true ) ) );
 	
 				/* If no duration is found, output a default message. */
@@ -241,7 +251,7 @@ class BE_Events_Calendar {
 	 * Make Columns Sortable
 	 *
 	 * @since 1.0.0
-	 * @link http://devpress.com/blog/custom-columns-for-custom-post-types/
+	 * @link http://justintadlock.com/archives/2011/06/27/custom-columns-for-custom-post-types
 	 * @param array $columns
 	 * @return array
 	 */
@@ -361,15 +371,16 @@ class BE_Events_Calendar {
 			'update_item'       => 'Update Category',
 			'add_new_item'      => 'Add New Category',
 			'new_item_name'     => 'New Category Name',
-			'menu_name'         => 'Category'
+			'menu_name'         => 'Categories'
 		); 	
 	
-		register_taxonomy( 'event-category', array( 'events' ), array(
-			'hierarchical' => true,
-			'labels'       => $labels,
-			'show_ui'      => true,
-			'query_var'    => true,
-			'rewrite'      => array( 'slug' => 'event-category' ),
+		register_taxonomy( 'event-category', $post_types, array(
+			'hierarchical'      => true,
+			'labels'            => $labels,
+			'show_ui'           => true,
+			'show_admin_column' => true,
+			'query_var'         => true,
+			'rewrite'           => array( 'slug' => 'event-category' ),
 		));
 	}
 
@@ -430,8 +441,9 @@ class BE_Events_Calendar {
 	 */
 	function render_metabox() {
 
-		$start = get_post_meta( get_the_ID() , 'be_event_start', true );
-		$end   = get_post_meta( get_the_ID() , 'be_event_end',   true );
+		$start  = get_post_meta( get_the_ID() , 'be_event_start', true );
+		$end    = get_post_meta( get_the_ID() , 'be_event_end',   true );
+		$allday = get_post_meta( get_the_ID(), 'be_event_allday', true );
 
 		if ( !empty( $start ) && !empty( $end ) ) {
 			$start_date = date( 'm/d/Y', $start );
@@ -443,6 +455,10 @@ class BE_Events_Calendar {
 		wp_nonce_field( 'be_events_calendar_date_time', 'be_events_calendar_date_time_nonce' );
 		?>
 
+		<div class="section" style="min-height:0;">
+			<label for="be-events-calendar-allday">All Day event?</label>
+			<input name="be-events-calendar-allday" type="checkbox" id="be-events-calendar-allday" value="1" <?php checked( '1', $allday ); ?>>
+		</div>
 		<div class="section">
 			<label for="be-events-calendar-start">Start date and time:</label> 
 			<input name="be-events-calendar-start" type="text"  id="be-events-calendar-start" class="be-events-calendar-date" value="<?php echo !empty( $start ) ? $start_date : ''; ?>" placeholder="Date">
@@ -537,9 +553,11 @@ class BE_Events_Calendar {
 			$start_unix = strtotime( $start );
 			$end        = $_POST['be-events-calendar-end'] . ' ' . $_POST['be-events-calendar-end-time'];
 			$end_unix   = strtotime( $end );
+			$allday     = ( isset( $_POST['be-events-calendar-allday'] ) ? '1' : '0' );
 
-			update_post_meta( $post_id, 'be_event_start', $start_unix );
-			update_post_meta( $post_id, 'be_event_end',   $end_unix   );
+			update_post_meta( $post_id, 'be_event_start',  $start_unix );
+			update_post_meta( $post_id, 'be_event_end',    $end_unix   );
+			update_post_meta( $post_id, 'be_event_allday', $allday     );
 		}
 		
 		// Recurring Options

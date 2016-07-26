@@ -19,7 +19,7 @@ class BE_Upcoming_Events extends WP_Widget {
      **/
 	function __construct() {
 		$widget_ops = array( 'classname' => 'widget_upcoming_events', 'description' => '' );
-		parent::__construct( 'upcoming-events-widget', 'Upcoming Events Widget', $widget_ops );
+		parent::__construct( 'upcoming-events-widget', __( 'Upcoming Events Widget' ), $widget_ops );
 	}
 
     /**
@@ -53,7 +53,7 @@ class BE_Upcoming_Events extends WP_Widget {
 			echo $before_widget;
 		
 			if( $instance['title'] )
-				echo $before_title . esc_attr( $instance['title'] ) . $after_title;
+				echo $before_title . apply_filters( 'widget_title', $instance['title'] ) . $after_title;
 			
 			echo '<ul>';
 			
@@ -84,7 +84,7 @@ class BE_Upcoming_Events extends WP_Widget {
 	function update( $new_instance, $old_instance ) {
 		$instance = $old_instance;
 		
-		$instance['title'] = esc_attr( $new_instance['title'] );
+		$instance['title'] = wp_kses_post( $new_instance['title'] );
 		$instance['count'] = (int) esc_attr( $new_instance['count'] );
 		$instance['more_text'] = esc_attr( $new_instance['more_text'] );
 
