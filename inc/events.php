@@ -180,8 +180,6 @@ class BE_Events_Calendar {
 	 * @param int $post_id
 	 */
 	function manage_event_columns( $column, $post_id ) {
-
-		$date_format = 'M j, Y g:i A';
 	
 		switch( $column ) {
 	
@@ -223,12 +221,16 @@ class BE_Events_Calendar {
 			
 			/* If displaying the 'recurring' column. */
 			case 'recurring' :
-
+				
+				// Date format
+				$allday = get_post_meta( $post_id, 'be_event_allday', true );
+				$date_format = $allday ? 'M j, Y' : 'M j, Y g:i A';
+				
 				// Recurring options
 				$start = absint( get_post_meta( $post_id , 'be_event_start', true ) );
 				$end   = absint( get_post_meta( $post_id , 'be_event_end',   true ) );
-				$recurring_period = get_post_meta( $post_id , 'be_recurring_period',  true );
-				$recurring_end    = absint( get_post_meta( $post_id , 'be_recurring_end',     true ) );
+				$recurring_period = get_post_meta( $post_id , 'be_recurring_period', true );
+				$recurring_end    = absint( get_post_meta( $post_id , 'be_recurring_end', true ) );
 				$recurring = get_post_meta( $post_id, 'be_recurring', true );
 				$parent = wp_get_post_parent_id( $post_id );
 				$output = '';
