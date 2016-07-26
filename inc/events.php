@@ -160,6 +160,9 @@ class BE_Events_Calendar {
 			'event_end'   => 'Ends',
 		);
 		
+		if( $this->recurring_supported() )
+			$new_columns[ 'recurring' ] = __( 'Recurring Series' );
+		
 		// Add new columns after title column
 		$column_end = array_splice( $columns, 2 );
 		$column_start = array_splice( $columns, 0, 2);
@@ -260,9 +263,6 @@ class BE_Events_Calendar {
 		$columns['event_start'] = 'event_start';
 		$columns['event_end']   = 'event_end';
 		
-		if( $this->recurring_supported() )
-			$columns['recurring'] = 'recurring';
-		
 		return $columns;
 	}	 
 	
@@ -309,19 +309,6 @@ class BE_Events_Calendar {
 					$vars,
 					array(
 						'meta_key' => 'be_event_end',
-						'orderby' => 'meta_value_num'
-					)
-				);
-			}
-			
-			/* Check if 'orderby' is set to 'recurring'. */
-			if ( $this->recurring_supported() && isset( $vars['orderby'] ) && 'recurring' == $vars['orderby'] ) {
-	
-				/* Merge the query vars with our custom variables. */
-				$vars = array_merge(
-					$vars,
-					array(
-						'meta_key' => 'be_recurring_event',
 						'orderby' => 'meta_value_num'
 					)
 				);
