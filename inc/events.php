@@ -74,6 +74,9 @@ class BE_Events_Calendar {
 		
 		// Add Hooks to Generate Recurring Events
 		$this->add_insert_post_hooks();
+	
+		// Remove event from series
+		add_action( 'updated_post_meta', array( $this, 'remove_recurring_event' ), 15, 2 );
 		
 		// Avoid generating events on trash/untrash post, which can cause all sorts of issues
 		add_action( 'wp_trash_post', array( $this, 'remove_insert_post_hooks' ) );
@@ -88,7 +91,7 @@ class BE_Events_Calendar {
 	/**
 	 * Check if recurring events are supported.
 	 *
-	 * @since 1.2.0
+	 * @since 1.4.0
 	 *
 	 * @return boolean
 	 */
@@ -234,16 +237,12 @@ class BE_Events_Calendar {
 				$recurring_period = get_post_meta( $post_id , 'be_recurring_period', true );
 				$recurring_end    = absint( get_post_meta( $post_id , 'be_recurring_end', true ) );
 				$recurring = get_post_meta( $post_id, 'be_recurring', true );
-				$parent = wp_get_post_parent_id( $post_id );
-				$output = '';
-				if ( !empty( $parent ) ) {
-					$output = 'Part of series: <a href="' . get_edit_post_link( $parent ) . '">' . get_the_title( $parent ) . '</a><br/>';
-				} elseif( empty( $parent ) && $recurring ) {
-					$output = '<strong>Series Master</strong><br/>';
-				}
-				if( !empty( $output ) ) {
-					$output .= 'Starting ' . date( $date_format, $start ) . ', recurring ' . ucfirst( $recurring_period ) . ' until ' .  date( 'M j, Y', $recurring_end ) . ' ' .  date( 'g:i A', $end );
-					echo $output;
+				$series_id = absint( get_post_meta( $post_id, '_series_id', true ) );
+				$series_start = absint( get_post_meta( $post_id , '_series_event_start', true ) );
+				$series_end = absint( get_post_meta( $post_id , '_series_event_end',   true ) );
+
+				if ( !empty( $series_id ) && $this->is_timestamp( $recurring_end ) && $this->is_timestamp( $series_end ) && $this->is_timestamp( $series_start ) ) {
+					echo 'Part of series: ' . $series_id . '<br/>Starting ' . date( 'M j, Y g:i A', $series_start ) . ', recurring ' . ucfirst( $recurring_period ) . ' until ' .  date( 'M j, Y', $recurring_end ) . ' ' .  date( 'g:i A', $series_end );
 				}
 				
 				break;
@@ -252,7 +251,32 @@ class BE_Events_Calendar {
 			default :
 				break;
 		}
-	}	 
+	}
+	
+	/**
+	 * Remove Post From Series
+	 *
+	 * @since 1.4.0
+	 */
+	function remove_recurring_event( $meta_id, $post_id ) {
+	
+		if( $this->post_type_name !== get_post_type( $post_id ) )
+			return;
+	
+		$modify_recurring_event_details = get_post_meta( $post_id, 'modify_recurring_event_details', true );
+	
+		if( 'remove_from_series' == esc_attr( $modify_recurring_event_details ) ) {
+			// Remove recurring meta
+			$this->remove_recurring_event_meta( $post_id );
+
+			// Update the post into the database
+			$my_post = array(
+				'ID'           => $post_id,
+				'post_parent'  => 0
+			);
+			return wp_update_post( $my_post );
+		}
+	}
 	
 	/**
 	 * Make Columns Sortable
@@ -322,7 +346,7 @@ class BE_Events_Calendar {
 	
 		return $vars;
 	}
-
+	
 	/**
 	 * Change the default title placeholder text
 	 *
@@ -648,6 +672,17 @@ class BE_Events_Calendar {
 		$event_content = get_post( $post_id )->post_content;
 		$event_start = get_post_meta( $post_id, 'be_event_start', true );
 		$event_end = get_post_meta( $post_id, 'be_event_end', true );
+		$_series_event_start = $event_start;
+		$_series_event_end = $event_end;
+		
+		// Create the series id as the post id and set the series event start/end
+		$series_id = get_post_meta( $post_id, '_series_id', true );
+		if( empty( $series_id ) ) {
+			$series_id = $post_id;
+			update_post_meta( $post_id, '_series_id', $series_id );
+			update_post_meta( $post_id , '_series_event_start', $_series_event_start );
+			update_post_meta( $post_id , '_series_event_end', $_series_event_end );
+		}
 		
 		// Save parent start date to skip the first recurring event
 		$parent_start = $event_start;
@@ -661,18 +696,32 @@ class BE_Events_Calendar {
 		if( !$this->is_timestamp( $stop ) || !$this->is_timestamp( $event_start ) )
 			return;
 		
+		// Jump if it doesn't work
+		if( $stop < $event_start ) {
+			
+			if( function_exists( 'add_notice' ) )
+				add_notice( 'Recurring events were not generated, the event start date occurs after the recurring ending.' );
+			
+			return;
+		}
+		
 		// Remove Generate Recurring Events, this prevents an infinite loop
 		$this->remove_insert_post_hooks();
 		
 		// Build the posts!
-		$limit = apply_filters( 'be_calendar_recurring_limit', 100 );
+		$limit = apply_filters( 'be_calendar_recurring_limit', 50 );
 		$i = 1;
+		$generated_events = array();
 		while( ( $event_start < $stop ) && ( $i < $limit ) ) {
 			
 			// For regenerating, only create future events
 			// And don't recreate the series master
 			if( $event_start != $parent_start && ( !$regenerating || ( $regenerating && $event_start > (int) current_time( 'timestamp' ) ) ) ):
 			
+				// Unique post slug
+				$slug_base = sanitize_title( $event_title );
+				$post_slug = $slug_base . '-' . date( 'm-d-Y', $event_start );
+				
 				// Create the Event
 				$args = array(
 					'post_title' => $event_title,
@@ -680,12 +729,24 @@ class BE_Events_Calendar {
 					'post_status' => 'publish',
 					'post_type' => $this->post_type_name,
 					'post_parent' => $post_id,
+					'post_name' => $post_slug,
 				);
 				$event_id = wp_insert_post( $args );
+				$generated_events[] = $event_id;
 				if( $event_id ) {
 					update_post_meta( $event_id, 'be_recurring', '0' );
 					update_post_meta( $event_id, 'be_event_start', $event_start );
 					update_post_meta( $event_id, 'be_event_end', $event_end );
+					update_post_meta( $event_id, '_series_id', $post_id );
+					update_post_meta( $event_id , '_series_event_start', $_series_event_start );
+					update_post_meta( $event_id , '_series_event_end', $_series_event_end );
+					delete_post_meta( $event_id, 'modify_recurring_event_details' );
+					
+					// Copy Featured Iage
+					if( get_post_thumbnail_id( $post_id ) ) {
+						$thumbnail_id = get_post_thumbnail_id( $post_id );
+						set_post_thumbnail( $event_id, $thumbnail_id, true );
+					}
 					
 					// Add any additional metadata
 					$metas = apply_filters( 'be_events_manager_recurring_meta', array() );
@@ -709,10 +770,6 @@ class BE_Events_Calendar {
 				}
 			endif;
 			
-			// Set current start/end as past, prior to the incrementing
-			$previous_start = $event_start;
-			$previous_end = $event_end;
-			
 			// Increment the date
 			switch( $period ) {
 		
@@ -730,11 +787,14 @@ class BE_Events_Calendar {
 					$event_start = strtotime( '+1 Months', $event_start );
 					$event_end = strtotime( '+1 Months', $event_end );
 					break;
+						
+				// If there are no options, bump the start to stop the loop
+				// but allow it to be filtered first.
+				default:
+					$event_start = $stop;
+					$event_start++;
+					break;
 			}
-			
-			// Allow for custom recurring options
-			$event_start = apply_filters( 'be_calendar_recurrance_start', $event_start, $previous_start, $period, $post_id, $event_id );
-			$event_end = apply_filters( 'be_calendar_recurrance_end', $event_end, $previous_start, $period, $post_id, $event_id );
 			
 			// Limit the recurrances
 			$i++;
@@ -742,28 +802,15 @@ class BE_Events_Calendar {
 		
 		// Replace Generate Recurring Events, we need these normally, see above
 		$this->add_insert_post_hooks();
-		
-		// Dont generate again
-		update_post_meta( $post_id, 'be_generated_events', true );
-	}
 	
-	/**
-	 * Validate the timestamp.
-	 *
-	 * @since 1.2.0
-	 *
-	 * @link https://gist.github.com/sepehr/6351385
-	 *
-	 * @param string $timestamp 
-	 * @return boolean
-	 */
-	function is_timestamp( $timestamp ) {
-		$check = (is_int($timestamp) OR is_float($timestamp))
-			? $timestamp
-			: (string) (int) $timestamp;
-		return  ($check === $timestamp)
-	        	AND ( (int) $timestamp <=  PHP_INT_MAX)
-	        	AND ( (int) $timestamp >= ~PHP_INT_MAX);
+		// Dont generate again
+		if( !empty( $generated_events ) ) {
+			update_post_meta( $post_id, 'be_generated_events', true );
+			update_post_meta( $post_id, '_generated_event_ids', $generated_events );
+		} else {
+			update_post_meta( $post_id, 'be_generated_events', true );
+			add_notice( 'Issues occured when generating the recurring series, please select "Update future events" and re-publish this series' );
+		}
 	}
 	
 	/**
@@ -775,25 +822,53 @@ class BE_Events_Calendar {
 	function regenerate_events( $post_id ) {
 		if( $this->post_type_name !== get_post_type( $post_id ) )
 			return;
+			
+		if( 'publish' !== get_post_status( $post_id ) )
+			return;
 		
 		if( !$this->recurring_supported() )
 			return;
-			
-		// Make sure they want to regenerate them
-		$regenerate = get_post_meta( $post_id, 'be_regenerate_events', true );
-		if( ! $regenerate )	
+		
+		// Make sure this is a recurring event
+		$recurring = get_post_meta( $post_id, 'be_recurring_event', true );
+		if( !$recurring )
 			return;
+		
+		// Make sure they want to regenerate them
+		$regenerate = get_post_meta( $post_id, 'be_modify_recurring_event_details', true );
+		if( !$regenerate || ( 'delete_future_events' != $regenerate && 'regenerate_series' != $regenerate ) )
+			return;
+	
+		if( 'delete_future_events' == $regenerate ) {
+			$timestamp = absint( get_post_meta( $post_id, 'event_start', true ) );
+			if( !is_timestamp( $timestamp ) ) {
+				add_notice( 'The series was not updated because the start time was invalid' );
+				return;
+			}
+		} else {
+			$timestamp = (int) current_time( 'timestamp' );
+		}
+		
+		$series_id = absint( get_post_meta( $post_id, '_series_id', true ) );
+		if( !$series_id )
+			$series_id = $post_id;
+		
+		// Remove Generate Recurring Events, this prevents an infinite loop
+		$this->remove_insert_post_hooks();
 			
 		// Delete all future events
 		$args = array(
 			'post_type' => $this->post_type_name,
 			'posts_per_page' => -1,
-			'post_parent' => $post_id,
 			'meta_query' => array(
 				array(
-					'key' => 'be_event_start',
-					'value' => time(),
+					'key' => 'event_start',
+					'value' => $timestamp,
 					'compare' => '>'
+				),
+				array(
+					'key' => '_series_id',
+					'value' => $series_id,
 				),
 			)
 		);
@@ -803,12 +878,71 @@ class BE_Events_Calendar {
 				wp_delete_post( get_the_ID(), false );
 		endwhile; endif; wp_reset_postdata();
 		
-		// Turn off regenerate and on generate
+		// Replace Generate Recurring Events, we need these normally, see above
+		$this->add_insert_post_hooks();
+		
+		if( 'regenerate_series' == $regenerate ) {
+			// Turn off regenerate and on generate
+			$meta = get_post_meta( $post_id );
+			delete_post_meta( $post_id, 'be_regenerate_events' );
+			delete_post_meta( $post_id, 'be_generated_events' );
+			delete_post_meta( $post_id, '_generated_event_ids' );
+			update_post_meta( $post_id, '_series_id', $post_id );
+			update_post_meta( $post_id , '_series_event_start', get_post_meta( $post_id, 'event_start', true ) );
+			update_post_meta( $post_id , '_series_event_end', get_post_meta( $post_id, 'event_start', true ) );
+			$this->remove_parent_post( $post_id );
+		
+			// Clear this to avoid regenerating
+			delete_post_meta( $post_id, 'be_modify_recurring_event_details' );
+		
+			// Generate new events
+			$this->generate_events( $post_id, true );
+		
+		} elseif( 'delete_future_events' == $regenerate ) {
+			delete_post_meta( $post_id, 'be_modify_recurring_event_details' );
+		}
+	}
+	
+	/**
+	 * Delete all the recurring meta options for a post.
+	 *
+	 * @since 1.0.0
+	 *
+	 * @param string $post_id 
+	 * @return void
+	 */
+	function remove_recurring_event_meta( $post_id ) {
+		delete_post_meta( $post_id, 'be_modify_recurring_event_details' );
+		delete_post_meta( $post_id, 'be_recurring_event' );
+		delete_post_meta( $post_id, 'be_recurring_period' );
+		delete_post_meta( $post_id, 'be_recurring_end' );
 		delete_post_meta( $post_id, 'be_regenerate_events' );
 		delete_post_meta( $post_id, 'be_generated_events' );
-		
-		// Generate new events
-		$this->generate_events( $post_id, true );
+		delete_post_meta( $post_id, '_generated_event_ids' );
+		delete_post_meta( $post_id, '_series_id' );
+		delete_post_meta( $post_id , '_series_event_start' );
+		delete_post_meta( $post_id , '_series_event_end' );
+		$this->remove_parent_post( $post_id );
+	}
+	
+	/**
+	 * Remove the parent post from a post.
+	 *
+	 * @since 1.0.0
+	 *
+	 * @param string $post_id 
+	 * @return int|boolean
+	 */
+	function remove_parent_post( $post_id ) {
+		$parent = wp_get_post_parent_id( $post_id );
+		if( $parent ) {
+			$post = array(
+				'ID' => $post_id,
+				'post_parent' => 0,
+			);
+			return wp_update_post( $post );
+		}
+		return false;
 	}
 	
 	/**
