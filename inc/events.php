@@ -436,7 +436,7 @@ class BE_Events_Calendar {
 		$end    = get_post_meta( get_the_ID() , 'be_event_end',   true );
 		$allday = get_post_meta( get_the_ID(), 'be_event_allday', true );
 
-		if ( !empty( $start ) && !empty( $end ) ) {
+		if ( !empty( $start ) && !empty( $end ) && $this->is_timestamp( $start ) && $this->is_timestamp( $end ) ) {
 			$start_date = date( 'm/d/Y', $start );
 			$start_time = date( 'g:ia',  $start );
 			$end_date   = date( 'm/d/Y', $end   );
@@ -658,7 +658,7 @@ class BE_Events_Calendar {
 		$period = get_post_meta( $post_id, 'be_recurring_period', true );
 		
 		// Validate the stop timestamp, if it's not valid bail
-		if( !$this->is_timestamp( $stop ) )
+		if( !$this->is_timestamp( $stop ) || !$this->is_timestamp( $event_start ) )
 			return;
 		
 		// Remove Generate Recurring Events, this prevents an infinite loop
@@ -671,8 +671,8 @@ class BE_Events_Calendar {
 			
 			// For regenerating, only create future events
 			// And don't recreate the series master
-			if( $event_start != $parent_start && ( !$regenerating || ( $regenerating && $event_start > time() ) ) ):
-
+			if( $event_start != $parent_start && ( !$regenerating || ( $regenerating && $event_start > (int) current_time( 'timestamp' ) ) ) ):
+			
 				// Create the Event
 				$args = array(
 					'post_title' => $event_title,
@@ -837,6 +837,25 @@ class BE_Events_Calendar {
 			$query->set( 'meta_query', $meta_query );
 			$query->set( 'meta_key', 'be_event_start' );
 		}
+	}
+	
+	/**
+	 * Validate the timestamp.
+	 *
+	 * @since 1.2.0
+	 *
+	 * @link https://gist.github.com/sepehr/6351385
+	 *
+	 * @param string $timestamp 
+	 * @return boolean
+	 */
+	function is_timestamp( $timestamp ) {
+		$check = (is_int($timestamp) OR is_float($timestamp))
+			? $timestamp
+			: (string) (int) $timestamp;
+		return  ($check === $timestamp)
+	        	AND ( (int) $timestamp <=  PHP_INT_MAX)
+	        	AND ( (int) $timestamp >= ~PHP_INT_MAX);
 	}
 	
 }
